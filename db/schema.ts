@@ -1,0 +1,3 @@
+import { sqliteTable, text } from 'drizzle-orm/sqlite-core';
+export const bookings=sqliteTable('bookings',{id:text('id').primaryKey(),owner:text('owner').notNull(),data:text('data').notNull(),updated:text('updated').notNull()});
+export const documents=sqliteTable('documents',{id:text('id').primaryKey(),owner:text('owner').notNull(),booking:text('booking').notNull(),guest:text('guest').notNull(),name:text('name').notNull(),type:text('type').notNull(),key:text('key').notNull()});
