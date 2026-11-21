@@ -6,7 +6,7 @@ assert.equal((await call('/api/bookings')).status,401);
 const login=await call('/signin-with-chatgpt?return_to=%2F',{redirect:'manual'});
 cookie=login.headers.getSetCookie().map(x=>x.split(';')[0]).join('; ');
 assert.ok(cookie);
-const b={primaryName:'API Test Guest',phone:'9999999999',email:'',property:'Disposable test cottage',rooms:2,roomNumbers:'101,102',checkIn:'2026-12-01',checkInTime:'14:00',checkOut:'2026-12-03',checkOutTime:'11:00',guestCount:1,guests:[{id:crypto.randomUUID(),name:'API Test Guest',age:30,gender:'',address:'Test address only',idType:'Other',consent:true}],source:'Direct',reference:'AUTOMATED-TEST',arrivingFrom:'Test City',purpose:'Leisure',notes:'Disposable integration test',total:10000,paid:4000,paymentMethod:'UPI',status:'Confirmed',cleaning:'Ready'};
+const b={primaryName:'API Test Guest',phone:'9999999999',email:'',property:'',rooms:2,roomNumbers:'101,102',checkIn:'2026-12-01',checkInTime:'14:00',checkOut:'2026-12-03',checkOutTime:'11:00',guestCount:1,guests:[{id:crypto.randomUUID(),name:'API Test Guest',age:30,gender:'',address:'',idType:'Other'}],source:'Direct',reference:'AUTOMATED-TEST',arrivingFrom:'',purpose:'Leisure',notes:'Disposable integration test',total:10000,paid:4000,paymentMethod:'UPI',status:'Confirmed'};
 async function post(v){return call('/api/bookings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(v)});}
 assert.equal((await post({...b,paid:11000})).status,400);
 assert.equal((await post({...b,guestCount:2})).status,400);

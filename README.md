@@ -11,10 +11,10 @@ Start `npm run dev`. Use the printed localhost URL.
 The local development server simulates ChatGPT sign-in for loopback only. Hosted authentication is managed by Sites. No shared password or public signup is configured.
 
 ## Features
-Private login, booking CRUD, per-guest details, guest count, ID attachments, document deletion/download, payments, status changes, room readiness, search, calendar, and guest register.
+Private login, booking CRUD, per-guest details, guest count, ID attachments, document deletion/download, payments, status changes, search, calendar, and guest register.
 The database and uploaded documents persist server-side. Local and deployed databases are separate.
 Dates use Asia/Kolkata and amounts use INR. Booking data is entered manually; no Airbnb channel synchronization or payment collection is configured.
-ID uploads accept JPEG, PNG and PDF up to 8 MB, require recorded guest consent and are authorized by owner. Deleting a booking deletes its attachments.
+ID uploads accept JPEG, PNG and PDF up to 8 MB, and require booking-owner access. Deleting a booking deletes its attachments.
 
 ## Deployment
 The Sites manifest contains the project ID and D1/R2 bindings. Preserve migrations and manifest in source. Build with the Sites build helper, package and publish through Sites.
