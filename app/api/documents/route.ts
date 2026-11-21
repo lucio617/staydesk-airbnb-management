@@ -1,5 +1,82 @@
-import {env} from 'cloudflare:workers';import {getChatGPTUser} from '../../chatgpt-auth';
-export const dynamic='force-dynamic';const json=(v:unknown,status=200)=>Response.json(v,{status,headers:{'Cache-Control':'no-store'}});
-export async function GET(req:Request){const u=await getChatGPTUser();if(!u)return json({error:'Please sign in'},401);const q=new URL(req.url).searchParams;if(q.get('id')){const d=await env.DB!.prepare('SELECT * FROM documents WHERE id=? AND owner=?').bind(q.get('id'),u.userId).first<{key:string;name:string;type:string}>();if(!d)return json({error:'Document not found'},404);const o=await env.BUCKET!.get(d.key);if(!o)return json({error:'File not found'},404);return new Response(o.body,{headers:{'Content-Type':d.type,'Content-Disposition':"attachment; filename*=UTF-8''"+encodeURIComponent(d.name),'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});}const r=await env.DB!.prepare('SELECT id,guest,name,type FROM documents WHERE booking=? AND owner=?').bind(q.get('booking'),u.userId).all();return json(r.results);}
-export async function POST(req:Request){const u=await getChatGPTUser();if(!u)return json({error:'Please sign in'},401);if(req.headers.get('origin')&&req.headers.get('origin')!==new URL(req.url).origin)return json({error:'Invalid origin'},403);const f=await req.formData(),file=f.get('file'),booking=String(f.get('booking')||''),guest=String(f.get('guest')||'');if(!(file instanceof File)||!file.size||file.size>8388608)return json({error:'Choose a file under 8 MB'},400);if(!['image/jpeg','image/png','application/pdf'].includes(file.type))return json({error:'Use JPG, PNG or PDF'},400);const b=await env.DB!.prepare('SELECT data FROM bookings WHERE id=? AND owner=?').bind(booking,u.userId).first<{data:string}>();if(!b)return json({error:'Save the booking first'},404);const g=JSON.parse(b.data).guests.find((g:{id:string})=>g.id===guest);if(!g)return json({error:'Guest not found in this booking'},400);const bytes=new Uint8Array(await file.arrayBuffer());const valid=file.type==='application/pdf'?new TextDecoder().decode(bytes.slice(0,5))==='%PDF-':file.type==='image/png'?bytes[0]===137&&bytes[1]===80&&bytes[2]===78&&bytes[3]===71:bytes[0]===255&&bytes[1]===216&&bytes[2]===255;if(!valid)return json({error:'File content does not match its type'},400);const id=crypto.randomUUID(),key=u.userId+'/'+booking+'/'+id;await env.BUCKET!.put(key,bytes,{httpMetadata:{contentType:file.type}});try{await env.DB!.prepare('INSERT INTO documents (id,owner,booking,guest,name,type,key) VALUES (?,?,?,?,?,?,?)').bind(id,u.userId,booking,guest,file.name.slice(0,200),file.type,key).run();}catch(e){await env.BUCKET!.delete(key);throw e;}return json({id,guest,name:file.name,type:file.type});}
-export async function DELETE(req:Request){const u=await getChatGPTUser();if(!u)return json({error:'Please sign in'},401);if(req.headers.get('origin')&&req.headers.get('origin')!==new URL(req.url).origin)return json({error:'Invalid origin'},403);const id=new URL(req.url).searchParams.get('id');if(!id)return json({error:'Missing document'},400);const d=await env.DB!.prepare('SELECT key FROM documents WHERE id=? AND owner=?').bind(id,u.userId).first<{key:string}>();if(!d)return json({error:'Document not found'},404);await env.BUCKET!.delete(d.key);await env.DB!.prepare('DELETE FROM documents WHERE id=? AND owner=?').bind(id,u.userId).run();return json({ok:true});}
+import { deleteObject, json, objectPath, supabase, table, withOwner, write } from "../supabase";
+export const dynamic = "force-dynamic";
+
+type Document = { id: string; guest: string; key: string; name: string; type: string };
+
+async function findDocument(owner: string, id: string) {
+  const response = await supabase(table("documents", owner, { id }));
+  return (await response.json() as Document[])[0];
+}
+
+export function GET(req: Request) {
+  return withOwner(req, async owner => {
+    const query = new URL(req.url).searchParams;
+    const id = query.get("id");
+    if (id) {
+      const doc = await findDocument(owner, id);
+      if (!doc) return json({ error: "Document not found" }, 404);
+      const file = await supabase(objectPath(doc.key));
+      return new Response(file.body, { headers: {
+        "Content-Type": doc.type,
+        "Content-Disposition": "attachment; filename*=UTF-8''" + encodeURIComponent(doc.name),
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+      } });
+    }
+    const booking = query.get("booking");
+    if (!booking) return json([]);
+    const response = await supabase(table("documents", owner, { booking }, { select: "id,guest,name,type" }));
+    return json(await response.json());
+  });
+}
+
+function matchesType(bytes: Uint8Array, type: string) {
+  if (type === "application/pdf") return new TextDecoder().decode(bytes.subarray(0, 5)) === "%PDF-";
+  if (type === "image/png") return [137,80,78,71].every((byte, i) => bytes[i] === byte);
+  return type === "image/jpeg" && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
+}
+
+export function POST(req: Request) {
+  return withOwner(req, async owner => {
+    const form = await req.formData();
+    const file = form.get("file");
+    const booking = String(form.get("booking") || "");
+    const guest = String(form.get("guest") || "");
+    if (!(file instanceof File) || !file.size || file.size > 8388608)
+      return json({ error: "Choose a file under 8 MB" }, 400);
+    if (!["application/pdf", "image/jpeg", "image/png"].includes(file.type))
+      return json({ error: "Use JPG, PNG or PDF" }, 400);
+    const response = await supabase(table("bookings", owner, { id: booking }, { select: "data" }));
+    const [row] = await response.json() as { data: { guests: { id: string }[] } }[];
+    if (!row) return json({ error: "Save the booking first" }, 404);
+    if (!row.data.guests.some(person => person.id === guest))
+      return json({ error: "Guest not found in this booking" }, 400);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (!matchesType(bytes, file.type)) return json({ error: "File content does not match its type" }, 400);
+    const doc = { id: crypto.randomUUID(), guest, name: file.name.slice(0, 200), type: file.type };
+    const key = booking + "/" + doc.id;
+    await supabase(objectPath(key), { method: "POST", headers: { "Content-Type": doc.type }, body: bytes });
+    try {
+      await supabase("/rest/v1/staydesk_documents", write("POST", { ...doc, key, owner, booking }));
+    } catch (error) {
+      // A lost response may still mean the insert committed.
+      if (!(await findDocument(owner, doc.id))) {
+        await deleteObject(key);
+        throw error;
+      }
+    }
+    return json(doc);
+  });
+}
+
+export function DELETE(req: Request) {
+  return withOwner(req, async owner => {
+    const id = new URL(req.url).searchParams.get("id");
+    if (!id) return json({ error: "Missing document" }, 400);
+    const doc = await findDocument(owner, id);
+    if (!doc) return json({ error: "Document not found" }, 404);
+    await deleteObject(doc.key);
+    await supabase(table("documents", owner, { id }), { method: "DELETE" });
+    return json({ ok: true });
+  });
+}

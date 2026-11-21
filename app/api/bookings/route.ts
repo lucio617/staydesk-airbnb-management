@@ -1,6 +1,54 @@
-import {env} from 'cloudflare:workers';import {getChatGPTUser} from '../../chatgpt-auth';import {bookingSchema} from '../../model';
-export const dynamic='force-dynamic';
-const json=(v:unknown,status=200)=>Response.json(v,{status,headers:{'Cache-Control':'no-store'}});
-export async function GET(){const u=await getChatGPTUser();if(!u)return json({error:'Please sign in'},401);const r=await env.DB!.prepare('SELECT data FROM bookings WHERE owner=? ORDER BY updated DESC').bind(u.userId).all<{data:string}>();return json(r.results.map(r=>JSON.parse(r.data)));}
-export async function POST(req:Request){const u=await getChatGPTUser();if(!u)return json({error:'Please sign in'},401);if(req.headers.get('origin')&&req.headers.get('origin')!==new URL(req.url).origin)return json({error:'Invalid origin'},403);let input;try{input=await req.json();}catch{return json({error:'Invalid request'},400);}const p=bookingSchema.safeParse(input);if(!p.success)return json({error:p.error.issues[0].message},400);const b=p.data,id=b.id||crypto.randomUUID();if(b.id){const old=await env.DB!.prepare('SELECT id FROM bookings WHERE id=? AND owner=?').bind(id,u.userId).first();if(!old)return json({error:'Booking not found'},404);}const value={...b,id};await env.DB!.prepare('INSERT INTO bookings (id,owner,data,updated) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,updated=excluded.updated WHERE owner=excluded.owner').bind(id,u.userId,JSON.stringify(value),new Date().toISOString()).run();return json(value);}
-export async function DELETE(req:Request){const u=await getChatGPTUser();if(!u)return json({error:'Please sign in'},401);if(req.headers.get('origin')&&req.headers.get('origin')!==new URL(req.url).origin)return json({error:'Invalid origin'},403);const id=new URL(req.url).searchParams.get('id');if(!id)return json({error:'Missing booking'},400);const docs=await env.DB!.prepare('SELECT key FROM documents WHERE booking=? AND owner=?').bind(id,u.userId).all<{key:string}>();for(const d of docs.results)await env.BUCKET!.delete(d.key);await env.DB!.batch([env.DB!.prepare('DELETE FROM documents WHERE booking=? AND owner=?').bind(id,u.userId),env.DB!.prepare('DELETE FROM bookings WHERE id=? AND owner=?').bind(id,u.userId)]);return json({ok:true});}
+import { bookingSchema } from "../../model";
+import { deleteObject, json, supabase, table, withOwner, write } from "../supabase";
+
+export const dynamic = "force-dynamic";
+
+export function GET(req: Request) {
+  return withOwner(req, async owner => {
+    const bookings: unknown[] = [];
+    for (;;) {
+      const query = table("bookings", owner, {}, {
+        select: "data", order: "updated.desc,id", limit: "500", offset: String(bookings.length),
+      });
+      const rows = await (await supabase(query)).json() as { data: unknown }[];
+      if (!rows.length) return json(bookings);
+      bookings.push(...rows.map(row => row.data));
+    }
+  });
+}
+
+export function POST(req: Request) {
+  return withOwner(req, async owner => {
+    const parsed = bookingSchema.safeParse(await req.json().catch(() => null));
+    if (!parsed.success) return json({ error: parsed.error.issues[0].message }, 400);
+    const data = { ...parsed.data, id: parsed.data.id || crypto.randomUUID() };
+    const updated = new Date().toISOString();
+    if (parsed.data.id) {
+      const result = await supabase(table("bookings", owner, { id: data.id }), write("PATCH", { data, updated }));
+      if (!(await result.json() as unknown[]).length) return json({ error: "Booking not found" }, 404);
+    } else {
+      await supabase("/rest/v1/staydesk_bookings", write("POST", { id: data.id, owner, data, updated }));
+    }
+    return json(data);
+  });
+}
+
+export function DELETE(req: Request) {
+  return withOwner(req, async owner => {
+    const id = new URL(req.url).searchParams.get("id");
+    if (!id) return json({ error: "Missing booking" }, 400);
+    const documents = table("documents", owner, { booking: id }, { select: "id,key" });
+    // Delete rows individually so a concurrent upload cannot lose its metadata.
+    // The foreign key prevents booking deletion while any documents remain.
+    for (;;) {
+      const rows = await (await supabase(documents)).json() as { id: string; key: string }[];
+      if (!rows.length) break;
+      for (const row of rows) {
+        await deleteObject(row.key);
+        await supabase(table("documents", owner, { id: row.id }), { method: "DELETE" });
+      }
+    }
+    await supabase(table("bookings", owner, { id }), { method: "DELETE" });
+    return json({ ok: true });
+  });
+}

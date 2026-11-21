@@ -1,21 +1,21 @@
 # Staydesk
 
-Private guest check-in and booking management built with React, Vinext, Cloudflare D1 and R2.
+Staydesk keeps booking and guest details in Supabase Postgres and Aadhaar attachments in a private Supabase Storage bucket. Requests pass through the signed-in owner's booking API. The existing ChatGPT sign-in flow is used for owner identity.
 
-## Run locally
-Use Node 22.13 or newer.
-Install with `npm run install:ci`, then `npm run build`.
-Apply the generated migration once:
-`node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_typical_warbound.sql`
-Start `npm run dev`. Use the printed localhost URL.
-The local development server simulates ChatGPT sign-in for loopback only. Hosted authentication is managed by Sites. No shared password or public signup is configured.
+## Configure Supabase
 
-## Features
-Private login, booking CRUD, per-guest details, guest count, ID attachments, document deletion/download, payments, status changes, search, calendar, and guest register.
-The database and uploaded documents persist server-side. Local and deployed databases are separate.
-Dates use Asia/Kolkata and amounts use INR. Booking data is entered manually; no Airbnb channel synchronization or payment collection is configured.
-ID uploads accept JPEG, PNG and PDF up to 8 MB, and require booking-owner access. Deleting a booking deletes its attachments.
+1. In your own Supabase project, run `supabase/migrations/202611210001_staydesk.sql` once in the SQL Editor. This creates both tables and the private document bucket. The tables must be available through the project's Data API.
+2. Create a local `.dev.vars` file beside `package.json` using the project URL and a server secret from Supabase project settings.
 
-## Deployment
-The Sites manifest contains the project ID and D1/R2 bindings. Preserve migrations and manifest in source. Build with the Sites build helper, package and publish through Sites.
-See design.md for the visual and interaction specification.
+   ```dotenv
+   SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+   SUPABASE_SECRET_KEY=sb_secret_REPLACE_ME
+   ```
+
+3. With Node 22.13 or newer, run `npm run install:ci` then `npm run dev`. Open the localhost address printed by the server. The local development server simulates sign-in for loopback. Use a separate Supabase project for test records.
+
+The server key belongs in server-side configuration only. Git ignores `.dev.vars`. In a hosted runtime, configure the same two names as worker bindings and use a trusted authentication gateway that sets the authenticated user headers.
+
+## Existing records
+
+Changing the storage provider affects future saves in this version. Existing Cloudflare D1 rows and R2 files require a separate transfer. Preserve booking IDs, owner IDs, document IDs and the object keys referenced by the document rows. Verify booking counts and attachment downloads under the original owner's identity before deleting source data.
